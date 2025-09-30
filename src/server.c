@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <string.h>
 #include <pthread.h>
+#include <stdarg.h>
 
 #define ERROR_EXIT(msg) \
     fprintf(stderr, "ERROR in %s:%d - %s\n", __FILE__, __LINE__, msg); \
@@ -22,9 +23,15 @@
 
 #define PORT 8080
 #define BUF_SIZE 1024
-#define MAX_HEADERS 10
+#define MAX_HEADERS 100
+#define HTTP_VERSION "1.1"
 #define true 1
 #define false 0
+#define LF '\n'
+#define CR '\r'
+#define SPACE ' '
+#define COLON ':'
+#define SLASH '/'
 
 enum Parser {
   METHOD, PATH, VERSION_IGNORE, VERSION, HEADER_NAME, HEADER_VALUE, BODY
@@ -55,11 +62,16 @@ typedef struct {
   size_t headers_len;
   char* body;
   size_t body_len;
+  int status_code;
 } response_t;
 
 request_t* request_new(){
   request_t* req = malloc(sizeof(request_t));
   return req;
+}
+
+int request_has_body(request_t* req) {
+  return req->body_len > 0;
 }
 
 response_t* response_new(){
@@ -92,16 +104,80 @@ int get_until(char* buff, char c, int len){
   return len;
 }
 
-void printstr(const char* format, char *data, size_t len) {
-  char *str = malloc(len + 1);
+char* mkstring(char* data, size_t len){
+  char *str = malloc(sizeof(char) * (len + 1));
   if (!str) {
     perror("malloc");
-    return;
+    return NULL;
   }
   memcpy(str, data, len);  // copia os bytes
-  str[len] = '\0';         // garante terminador
-  printf(format, str);
+  str[len] = '\0';
+  return str;
+}
+
+void printstr(const char* format, char* data, size_t len) {
+  char *str = mkstring(data, len);
+  memcpy(str, data, len);  // copia os bytes
   free(str);  // libera memória
+}
+
+char* format_string(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+
+    // Descobre o tamanho necessário
+    va_list args_copy;
+    va_copy(args_copy, args);
+    int needed = vsnprintf(NULL, 0, fmt, args_copy);
+    va_end(args_copy);
+
+    if (needed < 0) {
+        va_end(args);
+        return NULL;
+    }
+
+    // Aloca memória suficiente
+    char *buffer = malloc(needed + 1);
+    if (!buffer) {
+        va_end(args);
+        return NULL;
+    }
+
+    // Preenche a string
+    vsnprintf(buffer, needed + 1, fmt, args);
+    va_end(args);
+
+    return buffer;
+}
+
+void request_debug(request_t* req){
+
+
+  char* method = mkstring(req->method, req->method_len);
+  char* path = mkstring(req->path, req->path_len);
+  char* version = mkstring(req->version, req->version_len);
+  char* body = request_has_body(req) ? mkstring(req->body, req->body_len) : NULL;
+
+
+  printf("DEBUG ::> request\n");
+  printf("DEBUG ::> [%ld]method %s\n", req->method_len, method);
+  printf("DEBUG ::> [%ld]path %s\n", req->path_len, path);
+  printf("DEBUG ::> [%ld]version %s\n", req->version_len, version);
+  printf("DEBUG ::> headers %ld\n", req->headers_len);
+  for(int i = 0; i < req->headers_len; i++){
+    char* name = mkstring(req->headers[i].name, req->headers[i].name_len);
+    char* value = mkstring(req->headers[i].value, req->headers[i].value_len);
+    printf("DEBUG ::> [%ld]%s=[%ld]%s\n", req->headers[i].name_len, name, req->headers[i].value_len, value);
+    free(name);
+    free(value);
+  }
+  printf("DEBUG ::> [%ld]body %s\n", req->body_len, body);
+
+  free(method);
+  free(path);
+  free(version);
+  if(body != NULL)
+    free(body);
 }
 
 request_t* parse_request(char* buff, int* len){
@@ -113,9 +189,11 @@ request_t* parse_request(char* buff, int* len){
   int start = 0;
 
   for(int i = 0; i < *len; i++){
+
+
     switch(parser) {
     case METHOD:
-      if(buff[i] == ' '){
+      if (buff[i] == SPACE) {
         req->method_len = i - start;
 	parser = PATH;
         start  = i+1;
@@ -123,40 +201,39 @@ request_t* parse_request(char* buff, int* len){
       }
       break;
     case PATH:
-      if(buff[i] == ' '){
+      if(buff[i] == SPACE){
         req->path_len = i - start;
         parser = VERSION_IGNORE;
-        start  = i+1;
       }
       break;
     case VERSION_IGNORE:
-      if(buff[i] == '/'){
+      if(buff[i] == SLASH){
         parser = VERSION;
         start  = i+1;
         req->version = buff+start;
       }
       break;
     case VERSION:
-      if(buff[i] == '\n'){
-        req->version_len = i - start;
+      if(buff[i] == LF){
+        req->version_len = (i - start) - 1;
 	parser = HEADER_NAME;
         start  = i+1;
         req->headers[++hlen].name = buff+start;
       }
       break;
     case HEADER_NAME:
-      if(buff[i] == ':'){
+      if(buff[i] == COLON){
         req->headers[hlen].name_len = i - start;
-	parser = HEADER_VALUE;
-        start  = i+1;
+        parser = HEADER_VALUE;
+        start  = i+2;
         req->headers[hlen].value = buff+start;
       }
       break;
     case HEADER_VALUE:
-      if(buff[i] == '\n'){
-        req->headers[hlen].value_len = i - start;
-        if(buff[i+1] == '\r' || buff[i+1] == '\n') {
-          i+= buff[i+1] == '\r' ? 2 : 1;
+      if(buff[i] == LF){
+        req->headers[hlen].value_len = (i - start) - 1;
+        if(buff[i+1] == CR || buff[i+1] == LF) {
+          i+= buff[i+1] == CR ? 2 : 1;
           start  = i+1;
 	  parser = BODY;
           req->body = buff+start;
@@ -184,21 +261,45 @@ request_t* parse_request(char* buff, int* len){
   //}
 }
 
-void send_request(int* clientfd, response_t* resp){
-  char* raw_resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nHello!\r\n\r\n\0";
-  send(*clientfd, raw_resp, strlen(raw_resp), 0);
-}
+void send_request(int* clientfd, request_t* req, response_t* resp){
 
-void print_request(request_t* req){
-  printf("::> request\n");
-  printstr("::> method %s\n", req->method, req->method_len);
-  printstr("::> path %s\n", req->path, req->path_len);
-  printstr("::> version %s\n", req->version, req->version_len);
+  char* body_raw = mkstring(resp->body, resp->body_len);
+  char* body = request_has_body(req) ? format_string("\r\n%s\r\n", body_raw) : NULL;
+  char* content_type_default = "Content-Type: text/plain\r\n";
+  char* content_length = format_string("Content-Length: %ld\r\n", resp->body_len);
+  char* content_type = NULL;
+
   for(int i = 0; i < req->headers_len; i++){
-    printstr("::> %s", req->headers[i].name, req->headers[i].name_len);
-    printstr("=%s\n", req->headers[i].value, req->headers[i].value_len);
+    char* name = mkstring(req->headers[i].name, req->headers[i].name_len);
+    printf("compare %s / %ld\n", name, req->headers[i].name_len);
+    if(strcmp("Content-Type", name) == 0){
+      char* value = mkstring(req->headers[i].value, req->headers[i].value_len);
+      content_type = format_string("%s: %s\r\n", name, value);
+      free(value);
+      free(name);
+      break;
+    }
+    free(name);
   }
-  printstr("::> body %s", req->body, req->body_len);
+
+
+  char* respstr = format_string(
+    "HTTP/%s %d OK\r\n%s%s%s",
+    HTTP_VERSION ,
+    resp->status_code,
+    content_type == NULL ? content_type_default : content_type,
+    content_length,
+    body == NULL ? "" : body);
+
+  send(*clientfd, respstr, strlen(respstr), 0);
+
+  free(body_raw);
+  if(body)
+    free(body);
+  free(respstr);
+  free(content_length);
+  if(content_type)
+    free(content_type);
 }
 
 void handle(void* arg){
@@ -212,18 +313,15 @@ void handle(void* arg){
       ERROR_EXIT("read error");
     } else {
       request_t* req = parse_request(buff, &len);
-      print_request(req);
+      request_debug(req);
 
       response_t* resp = response_new();
+      resp->status_code = 200;
       resp->body_len = req->body_len;
       resp->body = req->body;
-      resp->headers[0].name = "Content-Type";
-      resp->headers[0].name_len = 12;
-      resp->headers[0].value = "text/plan";
-      resp->headers[0].name_len = 9;
-      resp->headers_len = 2;
+
       
-      send_request(&clientfd, resp);
+      send_request(&clientfd, req, resp);
       free(req);
       free(resp);
       
