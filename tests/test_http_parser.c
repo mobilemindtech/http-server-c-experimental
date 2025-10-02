@@ -16,8 +16,7 @@ void test_buff_decode(void) {
     buffer_decode(s1, &len);
     char* decoded = mkstring(s1, len);    
     CU_ASSERT_EQUAL(len, strlen("/path/with spaces/file.txt"));
-    CU_ASSERT_STRING_EQUAL(decoded, "/path/with spaces/file.txt");
-    CU_ASSERT_EQUAL(true, false);
+    CU_ASSERT_STRING_EQUAL(decoded, "/path/with spaces/file.txt");    
 }
 
 /* Adicione outros testes que cobrem as funções do server_core */
