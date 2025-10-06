@@ -53,7 +53,8 @@
 // errors
 
 #define INVALID_HEADER_NAME_CHAR -1
-#define INVALID_VERSION -2
+#define INVALID_HEADER -2
+#define INVALID_VERSION -3
 
 static const char *header_name_char_map = "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
                                           "\0\1\0\1\1\1\1\1\0\0\1\1\0\1\1\0\1\1\1\1\1\1\1\1\1\1\0\0\0\0\0\0"
@@ -86,7 +87,7 @@ enum HttpParser {
 };
 
 enum PathParser {
-    QUERY_NAME, QUERY_VALUE
+    NONE, QUERY_NAME, QUERY_VALUE
 };
 
 typedef struct {

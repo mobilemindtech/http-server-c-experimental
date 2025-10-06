@@ -1,5 +1,9 @@
 #include "http_parser.h"
 
+#define EOF() (buf[i] == CR || buf[i] == LF || buf[i] == '\0')
+
+#define ENDFOR() (i == len-1)
+
 int hex_to_int(char* c) {
   if ('0' <= *c && *c <= '9') return *c - '0';
   if ('A' <= *c && *c <= 'F') return *c - 'A' + 10;
@@ -32,67 +36,101 @@ void buffer_decode(char *buf, int* buf_len) {
   //*buf_len = dst - buf;
 }
 
+/**
+ * @brief parse_url Parse URL,
+ *
+ * Extracting query params.
+ * Change curr path len to ignore queries
+ *
+ * @param req request to parse
+ */
 void parse_url(request_t* req){
   char* buf = req->path;
   size_t len = req->path_len;
-  enum PathParser parser;
+  enum PathParser parser = NONE;
   int qlen = -1;
-  int start = 0;
+  int curr_start_idx = 0;
+
   for(int i = 0; i < len; i++){
     if(buf[i] == '?'){
+
+      // change curr path len to ignore query
+      req->path_len = i;
+
       parser = QUERY_NAME;
-      req->queries[++qlen].key = &buf[++i];
+      curr_start_idx = i+1;
+
+      if(!ENDFOR()) // check no query
+        req->queries[++qlen].key = buf[i+1] == '=' ? NULL : &buf[++i];
+
       continue;
     }
 
     switch(parser){
     case QUERY_NAME:
-    if(buf[i] == '='){
-      req->queries[++qlen].lkey = i-start;
-      start = i+1;
-      req->queries[qlen].val = buf + start;
+    if(buf[i] == '=' || EOF() || ENDFOR()){
+      req->queries[qlen].lkey = i-curr_start_idx;
+
+      if(!EOF() && ENDFOR() && buf[i] != '=')
+        req->queries[qlen].lkey += 1;
+
+      if(buf[i] != '=') goto done;
+
+      curr_start_idx = i+1;
+      req->queries[qlen].val = buf + curr_start_idx;
       parser = QUERY_VALUE;
     }
     break;
     case QUERY_VALUE:
-    if(buf[i] == '&' || (buf[i] == CR || buf[i] == LF)){
-      req->queries[qlen].lval = i - start;
 
-      if(buf[i] != '&') break;
+    if(buf[i] == '&' || EOF() || ENDFOR()){
+      req->queries[qlen].lval = i-curr_start_idx;
 
-      start = i+1;
-      req->queries[++qlen].key = buf + start;
+      if(!EOF() && ENDFOR() && buf[i] != '&') // precisa incrementar no último caracter
+        req->queries[qlen].lval+=1;
+
+      if(buf[i] != '&')  goto done;
+
+      curr_start_idx = i+1;
+      req->queries[++qlen].key = buf + curr_start_idx;
       parser = QUERY_NAME;
     }
     break;
     }
   }
 
-  req->queries_len = qlen;
+  done:
+  req->queries_len = qlen > -1 ? qlen+1 : 0;
 }
 
+/**
+ * @brief parse_request
+ * @param buf
+ * @param len
+ * @param req
+ * @param ret
+ */
 void parse_request(char* buf, int* len, request_t* req, int *ret){
-
 
   enum HttpParser parser = METHOD;
   int hlen = -1;
   req->method = buf;
-  int start = 0;
+  int last_idx = 0;
 
   for(int i = 0; i < *len; i++){
 
     switch(parser) {
     case METHOD:
       if (buf[i] == SPACE) {
-        req->method_len = i - start;
+        req->method_len = i - last_idx;
 	parser = PATH;
-        start  = i+1;
-        req->path = buf+start;
+        last_idx  = i+1;
+        req->path = buf+last_idx;
       }
       break;
     case PATH:
       if(buf[i] == SPACE){
-        req->path_len = i - start;
+        req->path_len = i - last_idx;
         parser = VERSION;
       }
       break;
@@ -116,24 +154,32 @@ void parse_request(char* buf, int* len, request_t* req, int *ret){
 
 
       parser = HEADER_NAME;
-      start  = i+1;
-      req->headers[++hlen].key = buf+start;
+      last_idx  = i+1;
+      req->headers[++hlen].key = buf+last_idx;
 
       break;
     case HEADER_NAME:
-      if(buf[i] == COLON || buf[i] == SPACE){
+      if(buf[i] == COLON){
 
-        req->headers[hlen].lkey = i - start;
-
-        if(buf[i] == SPACE) {
+        if(buf[i-1] == SPACE) {
+          int j = i;
           for(;;) // ignore space between header name and colon
-            if(buf[++i] == COLON) break;
+            if(buf[--i] != SPACE) break;
+          req->headers[hlen].lkey = j+1 - last_idx;
+        }else{
+          req->headers[hlen].lkey = i - last_idx;
         }
 
+
         parser = HEADER_VALUE;
-        start  = i+2;
-        req->headers[hlen].val = buf+start;
+        last_idx  = i+2;
+        req->headers[hlen].val = buf+last_idx;
         continue;
+      }
+
+      if(buf[i] == CR || buf[i] == LF){
+        *ret = INVALID_HEADER;
+        return;
       }
 
       // Em HTTP/1.x, campos como nomes de cabeçalhos (ex.: Content-Type, Host, etc.)
@@ -145,16 +191,16 @@ void parse_request(char* buf, int* len, request_t* req, int *ret){
       break;
     case HEADER_VALUE:
       if(buf[i] == LF){
-        req->headers[hlen].lval = (i - start) - 1;
+        req->headers[hlen].lval = (i - last_idx) - 1;
         if(buf[i+1] == CR || buf[i+1] == LF) {
           i+= buf[i+1] == CR ? 2 : 1;
-          start  = i+1;
+          last_idx  = i+1;
 	  parser = BODY;
-          req->body = buf+start;
+          req->body = buf+last_idx;
         } else {
-          start  = i+1;
+          last_idx  = i+1;
 	  parser = HEADER_NAME;
-          req->headers[++hlen].key = buf+start;
+          req->headers[++hlen].key = buf+last_idx;
 	}        
       }
       break;
@@ -164,6 +210,6 @@ void parse_request(char* buf, int* len, request_t* req, int *ret){
     }
  }
 
-  req->body_len = *len - start;
-  req->headers_len = hlen;
+  req->body_len = *len - last_idx;
+  req->headers_len = hlen > -1 ? hlen+1 : hlen;
 }

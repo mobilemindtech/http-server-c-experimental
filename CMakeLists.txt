@@ -44,3 +44,11 @@ if (BUILD_TESTS)
     # exporta a variável para subdiretórios (ou você pode procurar CUnit no tests/CMakeLists)
     add_subdirectory(tests)
 endif()
+
+# Cria um alvo customizado chamado "check"
+add_custom_target(check
+    COMMAND ${CMAKE_COMMAND} --build .            # equivalente ao "make"
+    COMMAND ${CMAKE_CTEST_COMMAND} --rerun-failed --output-on-failure
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Build e reexecuta apenas os testes que falharam"
+)
