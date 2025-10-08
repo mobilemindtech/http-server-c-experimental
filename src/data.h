@@ -37,6 +37,7 @@
         return;\
     }
 
+#define MAX_BACKLOG 128
 #define PORT 8080
 #define BUF_SIZE 1024
 #define MAX_HEADERS 100
@@ -124,6 +125,7 @@ typedef struct {
 // request_t
 request_t* request_new();
 int request_has_body(request_t* req);
+map_t* find_header(map_t* headers, int len, const char* name);
 
 // response_t
 response_t* response_new();

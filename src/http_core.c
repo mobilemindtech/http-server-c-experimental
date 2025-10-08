@@ -8,46 +8,52 @@ void setnonblocking(int sockfd){
   ERROR_EXIT_IF(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0, "setsockopt(SO_REUSEADDR)");
 }
 
+void headers_add(response_t* resp, const char* name, const char* value){
+  resp->headers[resp->headers_len].key = name;
+  resp->headers[resp->headers_len].lkey = strlen(name);
+  resp->headers[resp->headers_len].val = value;
+  resp->headers[resp->headers_len].lval = strlen(value);
+  resp->headers_len++;
+}
 
-void send_request(int* clientfd, request_t* req, response_t* resp){
+void header_add_body_len(response_t* resp){
+  char body_len[10];
+  sprintf(body_len, "%ld", resp->body_len);
+  resp->headers[resp->headers_len].key = "Content-Length";
+  resp->headers[resp->headers_len].lkey = 14;
+  resp->headers[resp->headers_len].val = body_len;
+  resp->headers[resp->headers_len].lval = strlen(body_len);
+  resp->headers_len++;
+}
 
-  char* body_raw = mkstring(resp->body, resp->body_len);
-  char* body = request_has_body(req) ? format_string("\r\n%s\r\n", body_raw) : NULL;
-  char* content_type_default = "Content-Type: text/plain\r\n";
-  char* content_length = format_string("Content-Length: %ld\r\n", resp->body_len);
-  char* content_type = NULL;
+void mk_server_error(response_t* resp){
+  resp->status_code = 500;
+  resp->body = "Server error";
+  resp->body_len = 12;
+  headers_add(resp, "Content-Type", "text/plain");
+  header_add_body_len(resp);
+}
 
-  for(int i = 0; i < req->headers_len; i++){
-    char* name = mkstring(req->headers[i].key, req->headers[i].lkey);
-    printf("compare %s / %ld\n", name, req->headers[i].lkey);
-    if(strcmp("Content-Type", name) == 0){
-      char* value = mkstring(req->headers[i].val, req->headers[i].lval);
-      content_type = format_string("%s: %s\r\n", name, value);
-      free(value);
-      free(name);
-      break;
-    }
-    free(name);
+void send_request(int* clientfd, response_t* resp){
+
+  char line[30];
+  sprintf(line, "HTTP/%s %d OK\r\n", HTTP_VERSION, resp->status_code);
+  send(*clientfd, line, strlen(line), 0);
+
+  for(int i=0; i<resp->headers_len;i++){
+    send(*clientfd, resp->headers[i].key, resp->headers[i].lkey, 0);
+    send(*clientfd, ": ", 2, 0);
+    send(*clientfd, resp->headers[i].val, resp->headers[i].lval, 0);
+    send(*clientfd, "\r\n", 2, 0);
   }
 
+  send(*clientfd, "\r\n", 2, 0);
 
-  char* respstr = format_string(
-    "HTTP/%s %d OK\r\n%s%s%s",
-    HTTP_VERSION ,
-    resp->status_code,
-    content_type == NULL ? content_type_default : content_type,
-    content_length,
-    body == NULL ? "" : body);
+  if(resp->body_len > 0){
+    send(*clientfd, resp->body, resp->body_len, 0);
+    send(*clientfd, "\r\n\r\n", 4, 0);
+  }
 
-  send(*clientfd, respstr, strlen(respstr), 0);
-
-  free(body_raw);
-  if(body)
-    free(body);
-  free(respstr);
-  free(content_length);
-  if(content_type)
-    free(content_type);
 }
 
 void handle(void* arg){
@@ -63,15 +69,37 @@ void handle(void* arg){
       int ret = 0;
       request_t* req = request_new();
       parse_request(buf, &len, req, &ret);
-      request_debug(req);
-
+      //request_debug(req);
       response_t* resp = response_new();
-      resp->status_code = 200;
-      resp->body_len = req->body_len;
-      resp->body = req->body;
 
+      if (ret != 0) {
+        printf("ERROR: %d\n", ret);
+        mk_server_error(resp);
+      } else {
+        map_t* content_type = find_header(req->headers, req->headers_len, "Content-Type");
+        resp->status_code = 200;
+        resp->body_len = req->body_len;
+        resp->body = req->body;
 
-      send_request(&clientfd, req, resp);
+        if(content_type != NULL){
+          resp->headers[resp->headers_len].key = content_type->key;
+          resp->headers[resp->headers_len].lkey = content_type->lkey;
+          resp->headers[resp->headers_len].val = content_type->val;
+          resp->headers[resp->headers_len].lval = content_type->lval;
+          resp->headers_len++;
+        } else {
+          headers_add(resp, "Content-Type", "text/plain");
+          //resp->headers[++hlen].key = "Content-Type";
+          //resp->headers[hlen].lkey = 12;
+          //resp->headers[hlen].val = "text/plain";
+          //resp->headers[hlen].lval = 10;
+        }
+
+        header_add_body_len(resp);
+      }
+
+      send_request(&clientfd, resp);
+
       free(req);
       free(resp);
 
@@ -100,7 +128,7 @@ void serve_blocking() {
 
   socklen_t addrlen = sizeof(struct sockaddr);
 
-  ERROR_EXIT_IF(listen(sockfd, 10) < 0, "error in socket listen");
+  ERROR_EXIT_IF(listen(sockfd, MAX_BACKLOG) < 0, "error in socket listen");
 
   printf("server listern on http://localhost:%d\n", PORT);
 

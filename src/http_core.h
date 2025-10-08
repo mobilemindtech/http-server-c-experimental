@@ -3,7 +3,7 @@
 
 #include "http_parser.h"
 
-void send_request(int* clientfd, request_t* req, response_t* resp);
+void send_request(int* clientfd, response_t* resp);
 
 void handle(void* arg);
 
